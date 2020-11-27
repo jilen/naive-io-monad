@@ -1,22 +1,29 @@
 import cats._
+import cats.syntax.all._
 
-sealed trait IO[A] {
-  def unsafeRun(): A = this match {
-    case IO.Pure(a) => a
-    case IO.FlatMap(fa, f) => f(fa.unsafeRun).unsafeRun
-    case IO.Effect(run) => run()
-    case IO.Failure(ex) => throw ex
-    case IO.Recover(fa, h) =>
-      try {
-        fa.unsafeRun()
-      } catch {
-        case e: Throwable =>
-          h(e).unsafeRun()
-      }
-  }
-}
+
+
+sealed trait IO[A]
+
 
 object IO {
+
+  object Runtime {
+    def unsafeRun[A](io: IO[A]): A = io match {
+      case IO.Pure(a) => a
+      case IO.FlatMap(fa, f) => unsafeRun(f(unsafeRun(fa)))
+      case IO.Effect(run) => run()
+      case IO.Failure(ex) => throw ex
+      case IO.Recover(fa, h) =>
+        try {
+          unsafeRun(fa)
+        } catch {
+          case e: Throwable =>
+            unsafeRun(h(e))
+        }
+    }
+  }
+
   private case class Pure[A](value: A) extends IO[A]
   private case class FlatMap[A, B](fa: IO[A], f: A => IO[B]) extends IO[B]
   private case class Effect[A](run: () => A) extends IO[A]
@@ -24,6 +31,7 @@ object IO {
   private case class Recover[A](fa: IO[A], handler: Throwable => IO[A]) extends IO[A]
 
   def effect[A](f: () => A): IO[A] = Effect(f)
+  def raiseError[A](e: Throwable): IO[A] = Failure(e)
 
   implicit def ioMonadErrorInstance: MonadError[IO, Throwable] = new MonadError[IO, Throwable] with StackSafeMonad[IO] {
     def pure[A](x: A) = IO.Pure(x)
@@ -63,7 +71,7 @@ object IOAppDemo {
     }.handleErrorWith {
       case NotAInt(str) => Console.putStrLn(s"$str 不是一个字符串")
     }
-    app.unsafeRun()
+    IO.Runtime.unsafeRun(app)
   }
 
   def main2(args: Array[String]) = {
