@@ -1,6 +1,7 @@
 import cats._
 import cats.syntax.all._
-
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicReference
 
 
 sealed trait IO[A]
@@ -9,17 +10,54 @@ sealed trait IO[A]
 object IO {
 
   object Runtime {
+
+    private def runAsyncFlatMap[A, B](io: FlatMap[A, B], fb: Either[Throwable, B] => Unit): Unit = {
+      unsafeRunAsync(io.fa) {
+        case Left(e) => fb(Left(e))
+        case Right(a) =>
+        unsafeRunAsync(io.f(a)) { b =>
+          fb(b)
+        }
+      }
+    }
+
+    def unsafeRunAsync[A](io: IO[A])(cb: Either[Throwable, A] => Unit): Unit = io match {
+      case IO.Pure(a) => cb(Right(a))
+      case io: IO.FlatMap[_, A] => runAsyncFlatMap(io, cb)
+      case IO.Effect(run) => cb(Right(run()))
+      case IO.Failure(ex) => cb(Left(ex))
+      case IO.AsyncF(register) =>
+        val trigger = register(cb)
+        unsafeRunAsync(trigger)(_ => ())
+      case IO.Recover(fa, h) =>
+        unsafeRunAsync(fa) {
+          case Left(e) => unsafeRunAsync(h(e))(cb)
+          case Right(v) => cb(Right(v))
+        }
+
+    }
+
     def unsafeRun[A](io: IO[A]): A = io match {
       case IO.Pure(a) => a
       case IO.FlatMap(fa, f) => unsafeRun(f(unsafeRun(fa)))
       case IO.Effect(run) => run()
       case IO.Failure(ex) => throw ex
       case IO.Recover(fa, h) =>
-        try {
-          unsafeRun(fa)
-        } catch {
-          case e: Throwable =>
-            unsafeRun(h(e))
+        Either.catchNonFatal(unsafeRun(fa)) match {
+          case Left(ex) => unsafeRun(h(ex))
+          case Right(v) => v
+        }
+      case IO.AsyncF(register) =>
+        val latch = new CountDownLatch(1)
+        val ref = new AtomicReference[Either[Throwable, A]]()
+        unsafeRun(register({ r: Either[Throwable, A] =>
+          ref.set(r)
+          latch.countDown()
+        }))
+        latch.await()
+        ref.get match {
+          case Right(v) => v
+          case Left(e) => throw e
         }
     }
   }
@@ -29,9 +67,11 @@ object IO {
   private case class Effect[A](run: () => A) extends IO[A]
   private case class Failure[A](ex: Throwable) extends IO[A]
   private case class Recover[A](fa: IO[A], handler: Throwable => IO[A]) extends IO[A]
+  private case class AsyncF[A](f: (Either[Throwable, A] => Unit) => IO[Unit]) extends IO[A]
 
   def effect[A](f: () => A): IO[A] = Effect(f)
   def raiseError[A](e: Throwable): IO[A] = Failure(e)
+  def asyncF[A](cb: (Either[Throwable, A] => Unit) => IO[Unit]): IO[A] = IO.AsyncF(cb)
 
   implicit def ioMonadErrorInstance: MonadError[IO, Throwable] = new MonadError[IO, Throwable] with StackSafeMonad[IO] {
     def pure[A](x: A) = IO.Pure(x)

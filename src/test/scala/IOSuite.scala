@@ -35,6 +35,10 @@ class IOSuite extends DisciplineSuite {
     )
   }
 
+  def genAsyncF[A: Arbitrary: Cogen]: Gen[IO[A]] = {
+    arbitrary[(Either[Throwable, A] => Unit) => IO[Unit]].map(IO.asyncF)
+  }
+
   def genFailure[A]: Gen[IO[A]] = {
     arbitrary[Throwable].map(e => IO.raiseError[A](e))
   }
