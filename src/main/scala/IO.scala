@@ -37,28 +37,16 @@ object IO {
 
     }
 
-    def unsafeRun[A](io: IO[A]): A = io match {
-      case IO.Pure(a) => a
-      case IO.FlatMap(fa, f) => unsafeRun(f(unsafeRun(fa)))
-      case IO.Effect(run) => run()
-      case IO.Failure(ex) => throw ex
-      case IO.Recover(fa, h) =>
-        Either.catchNonFatal(unsafeRun(fa)) match {
-          case Left(ex) => unsafeRun(h(ex))
-          case Right(v) => v
-        }
-      case IO.AsyncF(register) =>
-        val latch = new CountDownLatch(1)
-        val ref = new AtomicReference[Either[Throwable, A]]()
-        unsafeRun(register({ r: Either[Throwable, A] =>
-          ref.set(r)
-          latch.countDown()
-        }))
-        latch.await()
-        ref.get match {
-          case Right(v) => v
-          case Left(e) => throw e
-        }
+    def unsafeRun[A](io: IO[A]): Either[Throwable, A] = {
+      val latch = new CountDownLatch(1)
+      val ref = new AtomicReference[Either[Throwable, A]]
+      unsafeRunAsync(io) { r =>
+        ref.set(r)
+        latch.countDown()
+      }
+      latch.await()
+      ref.get
+
     }
   }
 
@@ -97,7 +85,7 @@ object IOAppDemo {
 
   case class NotAInt(str: String) extends Throwable
 
-  def main(args: Array[String]) = {
+  def main(args: Array[String]): Unit = {
     val readInt: IO[Int] = Console.getStr().flatMap { str =>
       val r: Either[Throwable, Int] = try {
         Right(str.toInt)
