@@ -9,6 +9,8 @@ import org.scalacheck.Arbitrary.arbitrary
 
 class IOSuite extends DisciplineSuite {
 
+  override val scalaCheckInitialSeed = "hXs776CfvFohCunD5bOCkluKmPqNvkd_zWv81HGUdYG="
+
   implicit def arbitraryForIO[A: Arbitrary: Cogen]: Arbitrary[IO[A]] =
     Arbitrary(Gen.delay(genIO[A]))
 
@@ -31,7 +33,8 @@ class IOSuite extends DisciplineSuite {
       1 -> genFailure[A],
       1 -> genRecover[A],
       2 -> genFlatMap[A],
-      1 -> genEffect[A]
+      1 -> genEffect[A],
+      1 -> genAsyncF[A]
     )
   }
 

@@ -2,6 +2,7 @@ import cats._
 import cats.syntax.all._
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
+import scala.collection.mutable.ArrayStack
 
 
 sealed trait IO[A]
@@ -11,30 +12,56 @@ object IO {
 
   object Runtime {
 
-    private def runAsyncFlatMap[A, B](io: FlatMap[A, B], fb: Either[Throwable, B] => Unit): Unit = {
-      unsafeRunAsync(io.fa) {
-        case Left(e) => fb(Left(e))
-        case Right(a) =>
-        unsafeRunAsync(io.f(a)) { b =>
-          fb(b)
+    private type Callback = Either[Throwable, Any] => Unit
+    private type AsyncLoop = ArrayStack[(() => IO[_], Callback)]
+
+    private def runAsyncFlatMap[A, B](loop: AsyncLoop, io: FlatMap[A, B], fb: Either[Throwable, B] => Unit): Unit = {
+      loop.push((() => io.fa) -> { eoa: Either[Throwable, Any] =>
+        eoa match {
+          case Left(e) =>
+            fb(Left(e))
+          case Right(a) =>
+            loop.push((() => {
+              io.f(a.asInstanceOf[A])
+            }) -> { eoa: Either[Throwable, Any] =>
+              loop.push((() => eoa.pure[IO]) ->{ eeob: Either[Throwable, Any] =>
+                eeob match {
+                  case Left(e) => throw new Exception("unreachable")
+                  case Right(v) => fb(v.asInstanceOf[Either[Throwable, B]])
+                }
+              })
+            })
         }
+      })
+    }
+
+    def unsafeRunAsync[A](io: IO[A])(cb: Either[Throwable, A] => Unit) = {
+      val loop = ArrayStack[(() => IO[_], Callback)]()
+      start(() => io, loop)(cb.asInstanceOf[Callback])
+      var curr = null
+      while(!loop.isEmpty) {
+        val (io, cb) = loop.pop()
+        start(io, loop)(cb)
       }
     }
 
-    def unsafeRunAsync[A](io: IO[A])(cb: Either[Throwable, A] => Unit): Unit = io match {
+    private def start[_]( io: () => IO[_], loop: AsyncLoop )(cb: Callback): Unit = io() match {
       case IO.Pure(a) => cb(Right(a))
-      case io: IO.FlatMap[_, A] => runAsyncFlatMap(io, cb)
+      case io: IO.FlatMap[_, _] => runAsyncFlatMap(loop, io, cb)
       case IO.Effect(run) => cb(Right(run()))
       case IO.Failure(ex) => cb(Left(ex))
       case IO.AsyncF(register) =>
-        val trigger = register(cb)
-        unsafeRunAsync(trigger)(_ => ())
+        loop.push(() => register(cb), _ => ())
       case IO.Recover(fa, h) =>
-        unsafeRunAsync(fa) {
-          case Left(e) => unsafeRunAsync(h(e))(cb)
-          case Right(v) => cb(Right(v))
-        }
-
+        loop.push((() => fa) -> { eoa: Either[Throwable, Any] =>
+          eoa match {
+            case Left(e) =>
+              loop.push((() => h(e)) -> { ee: Either[Throwable, Any] =>
+                cb(ee)
+              })
+            case Right(v) => cb(Right(v))
+          }
+        })
     }
 
     def unsafeRun[A](io: IO[A]): Either[Throwable, A] = {
