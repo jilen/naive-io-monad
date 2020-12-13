@@ -33,11 +33,9 @@ object IO {
       case IO.AsyncF(register) =>
         unsafeRunAsync[Unit](register(cb), _ => ())
       case IO.Recover(fa, h) =>
-        unsafeRunAsync(fa, { eoa: Either[Throwable, A] =>
-          eoa match {
+        unsafeRunAsync[A](fa, {
             case Left(e) => unsafeRunAsync(h(e), cb)
             case Right(v) => cb(Right(v))
-          }
         })
     }
 
