@@ -2,7 +2,7 @@ import cats._
 import cats.syntax.all._
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
-import scala.collection.mutable.ArrayStack
+import scala.collection.mutable.Stack
 
 
 sealed trait IO[A]
@@ -10,12 +10,45 @@ sealed trait IO[A]
 
 object IO {
 
+  object RuntimeStackNotStafe {
+
+
+    private def unsafeRunFlatMap[A, B](io: FlatMap[A, B], cb: Either[Throwable, B] => Unit): Unit = {
+      unsafeRunAsync[A](io.fa, {
+        case Left(e) =>
+          cb(Left(e))
+        case Right(a) =>
+          unsafeRunAsync[B](io.f(a), {
+            case Left(e) => cb(Left(e))
+            case Right(b) => cb(Right(b))
+          })
+      })
+    }
+
+    def unsafeRunAsync[A](io: IO[A], cb: Either[Throwable, A] => Unit): Unit = io match {
+      case IO.Pure(a) => cb(Right(a))
+      case io: IO.FlatMap[_, _] => unsafeRunFlatMap(io, cb)
+      case IO.Effect(run) => cb(Right(run()))
+      case IO.Failure(ex) => cb(Left(ex))
+      case IO.AsyncF(register) =>
+        unsafeRunAsync[Unit](register(cb), _ => ())
+      case IO.Recover(fa, h) =>
+        unsafeRunAsync(fa, { eoa: Either[Throwable, A] =>
+          eoa match {
+            case Left(e) => unsafeRunAsync(h(e), cb)
+            case Right(v) => cb(Right(v))
+          }
+        })
+    }
+
+  }
+
   object Runtime {
 
     private type Callback = Either[Throwable, Any] => Unit
-    private type AsyncLoop = ArrayStack[(() => IO[_], Callback)]
+    private type IOLoop = Stack[(() => IO[_], Callback)]
 
-    private def runAsyncFlatMap[A, B](loop: AsyncLoop, io: FlatMap[A, B], fb: Either[Throwable, B] => Unit): Unit = {
+    private def runAsyncFlatMap[A, B](loop: IOLoop, io: FlatMap[A, B], fb: Either[Throwable, B] => Unit): Unit = {
       loop.push((() => io.fa) -> { eoa: Either[Throwable, Any] =>
         eoa match {
           case Left(e) =>
@@ -36,7 +69,7 @@ object IO {
     }
 
     def unsafeRunAsync[A](io: IO[A])(cb: Either[Throwable, A] => Unit) = {
-      val loop = ArrayStack[(() => IO[_], Callback)]()
+      val loop = Stack[(() => IO[_], Callback)]()
       start(() => io, loop)(cb.asInstanceOf[Callback])
       var curr = null
       while(!loop.isEmpty) {
@@ -45,7 +78,7 @@ object IO {
       }
     }
 
-    private def start[_]( io: () => IO[_], loop: AsyncLoop )(cb: Callback): Unit = io() match {
+    private def start[_]( io: () => IO[_], loop: IOLoop )(cb: Callback): Unit = io() match {
       case IO.Pure(a) => cb(Right(a))
       case io: IO.FlatMap[_, _] => runAsyncFlatMap(loop, io, cb)
       case IO.Effect(run) => cb(Right(run()))
@@ -83,6 +116,7 @@ object IO {
   private case class Failure[A](ex: Throwable) extends IO[A]
   private case class Recover[A](fa: IO[A], handler: Throwable => IO[A]) extends IO[A]
   private case class AsyncF[A](f: (Either[Throwable, A] => Unit) => IO[Unit]) extends IO[A]
+  //private case class Async[A](f: (Either[Throwable, A] => Unit) => Unit) extends IO[A]
 
   def effect[A](f: () => A): IO[A] = Effect(f)
   def raiseError[A](e: Throwable): IO[A] = Failure(e)

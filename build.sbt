@@ -7,3 +7,6 @@ libraryDependencies ++= Seq(
 )
 
 testFrameworks += new TestFramework("munit.Framework")
+scalacOptions ++= Seq(
+  "-deprecation"
+)

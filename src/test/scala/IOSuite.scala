@@ -9,8 +9,6 @@ import org.scalacheck.Arbitrary.arbitrary
 
 class IOSuite extends DisciplineSuite {
 
-  override val scalaCheckInitialSeed = "hXs776CfvFohCunD5bOCkluKmPqNvkd_zWv81HGUdYG="
-
   implicit def arbitraryForIO[A: Arbitrary: Cogen]: Arbitrary[IO[A]] =
     Arbitrary(Gen.delay(genIO[A]))
 
